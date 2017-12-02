@@ -1,0 +1,226 @@
+#Connecting R to imdb SQL database
+
+The pupose of this project is to answer a series of questions and run some analysis of imdb.com's database using SQL code.A schema of the database is presented below. All the information presented is as of November 2015.
+
+
+Installing the required packages for this project and database. Now we can get started!
+```{r, warning = FALSE, message= FALSE, include=FALSE}
+install.packages('sqldf', repos = "http://cran.us.r-project.org")
+library(sqldf)
+install.packages('RSQLite', repos = "http://cran.us.r-project.org")
+library(RSQLite)
+
+db = dbConnect(drv = SQLite(), dbname = 'C:/Users/Der-chan/downloads/imdb_data')
+
+```
+
+![Flowchart of the Database](C:\Users\Der-chan\Documents\vehicle stats\db_schema.png)
+
+
+
+
+#Questions
+
+How many actors are there in the database? How many movies?
+
+```{r}
+numactors = as.integer(dbGetQuery(db, 'SELECT COUNT(idactors) FROM actors;'))
+nummovies = as.integer(dbGetQuery(db, 'SELECT COUNT(idmovies) FROM movies;'))
+numactors
+nummovies
+
+```
+
+What time period does the database cover?
+
+```{r}
+years = dbGetQuery(db, 'SELECT DISTINCT year FROM movies;')
+sort(years$year)
+```
+
+Since the first film cameras were invented in 1891, we can safely conclude that anything listed as having a release date before 1891 as inaccurate. From this, we can find the range of movies that the database covers that dont include obviously incorrect years
+
+
+```{r}
+dbGetQuery(db, 'SELECT MAX(year) FROM movies;')
+
+
+```
+The range of movies presented lie between 1891 and 2025 (unreleased titles)
+
+
+
+What proportion of the actors are female? male?
+```{r}
+femaleactors = dbGetQuery(db, 'SELECT * FROM actors WHERE gender IS NULL;')
+nrow(femaleactors)/numactors
+maleactors = dbGetQuery(db, 'SELECT * FROM actors WHERE gender = "1";')
+nrow(maleactors)/ numactors
+
+
+```
+From this we can see that the ratio of female to male actors in the database is close to 2:1
+
+What proportion of the entries in the movies table are actual movies and what proportion are television series, etc.?
+```{r}
+
+#type 1 is adult entertainment
+#type 2 is video games
+#type 3 is movies
+#type 'NULL' is series
+
+dbGetQuery(db, 'SELECT DISTINCT type FROM movies;')
+dbGetQuery(db, 'SELECT * FROM movies WHERE type IS NULL LIMIT 25')
+dbGetQuery(db, 'SELECT * FROM movies WHERE type = "3" LIMIT 25')
+as.integer(dbGetQuery(db, 'SELECT COUNT(*) FROM movies WHERE type = "1" '))/nummovies
+as.integer(dbGetQuery(db, 'SELECT COUNT(*) FROM movies WHERE type = "2" '))/nummovies
+as.integer(dbGetQuery(db, 'SELECT COUNT(*) FROM movies WHERE type = "3" '))/nummovies
+as.integer(dbGetQuery(db, 'SELECT COUNT(*) FROM movies WHERE type IS NULL '))/nummovies
+
+
+
+```
+
+
+How many genres are there? What are their names/descriptions?
+
+```{r}
+dbGetQuery(db, 'SELECT DISTINCT COUNT(genre) FROM genres;')
+genres = dbGetQuery(db, 'SELECT DISTINCT genre FROM genres;')
+genres
+```
+
+List the 10 most common genres of movies, showing the number of movies in each of these genres.
+
+```{r}
+
+moviegenres = dbGetQuery(db, "SELECT idmovies_genres, idgenres, idmovies FROM movies_genres")
+#creates table showing movie ids and genre ids
+
+genres = dbGetQuery(db, "SELECT * FROM genres INNER JOIN movies_genres ON genres.idgenres=movies_genres.idgenres")
+#this joins genres and movies_genres showing the genre name next to the id
+
+#sorts genres but number of entries
+sort(table(genres$genre), decreasing = TRUE)[1:10]
+
+
+```
+
+Has the number of movies in each genre changed over time? Plot the overall number of movies in each year over time, and for each genre.
+
+```{r, warning= FALSE}
+
+yeargenre = dbGetQuery(db, 'SELECT COUNT(movies.idmovies) AS count, year, genre
+           FROM genres, movies_genres, movies
+           WHERE genres.idgenres = movies_genres.idgenres
+           AND movies_genres.idmovies = movies.idmovies GROUP BY genre, year')
+dbGetQuery(db, 'SELECT genre, year, COUNT(movies.idmovies)
+           FROM genres, movies_genres, movies
+           WHERE genres.idgenres = movies_genres.idgenres
+           AND movies_genres.idmovies = movies.idmovies GROUP BY genre, year LIMIT 10')
+
+ordermovies = order(yeargenre$year)
+yeargenre = yeargenre[ordermovies,]
+yeargenre = na.omit(yeargenre) #remove NA observations
+library(ggplot2)
+ggplot(yeargenre, aes(year, count, colour = genre)) +geom_line() +xlab("Year") + ylab("Count") + ggtitle("Genres of Movies Per Year")
+
+
+```
+
+Who are the actors that have been in the most movies? List the top 20.
+```{r, include= FALSE, message= FALSE, results='hide'}
+dbGetQuery(db, 'SELECT lname, fname, COUNT(acted_in.idactors)
+           FROM actors, acted_in, movies
+           WHERE movies.idmovies = acted_in.idmovies
+           AND actors.idactors = acted_in.idactors
+           GROUP BY lname, fname 
+           LIMIT 20')
+
+dbGetQuery(db, 'CREATE TEMP TABLE counts AS 
+           SELECT lname, fname, COUNT(acted_in.idactors) AS count 
+           FROM acted_in, actors
+           WHERE acted_in.idactors = actors.idactors
+           GROUP BY acted_in.idactors')
+```
+
+```{r}
+counts = dbGetQuery(db, 'SELECT fname, lname, count FROM counts')
+actorcounts = order(counts$count, decreasing = TRUE)
+counts = counts[actorcounts,]
+head(counts, n = 20)
+
+
+
+```
+
+
+
+Who are the actors that have had the most number of movies with "top billing", i.e., billed as 1, 2 or 3? For each actor, also show the years these movies spanned?
+
+```{r, message= FALSE, include= FALSE}
+dbGetQuery(db, 'CREATE TEMP TABLE bestcounts AS 
+           SELECT lname, fname, COUNT(acted_in.idactors) AS count, MIN(year), MAX(year) 
+           FROM acted_in, actors, movies
+           WHERE acted_in.idactors = actors.idactors
+           AND movies.idmovies = acted_in.idmovies
+           AND billing_position < "4"
+           GROUP BY acted_in.idactors')
+dbGetQuery(db, 'SELECT fname, lname, count, "MIN(year)", "MAX(year)" FROM bestcounts ORDER BY count DESC LIMIT 10')
+
+
+
+
+```
+
+Who are the 10 actors that performed in the most movies within any given year? What are their names and the year they starred in these movies?
+```{r, message= FALSE}
+dbGetQuery(db, 'CREATE TEMP TABLE num11 AS
+           SELECT fname, lname, COUNT(acted_in.idactors) AS count, year 
+           FROM acted_in, actors, movies
+           WHERE acted_in.idactors = actors.idactors
+           AND movies.idmovies = acted_in.idmovies
+           AND movies.type = 1
+           GROUP BY year, acted_in.idactors')
+
+allactorsbyyear = dbGetQuery(db, 'SELECT DISTINCT * FROM num11 
+                 WHERE year > "1878"
+                 ORDER BY count DESC')
+
+top10byyear = dbGetQuery(db, 'SELECT DISTINCT * FROM num11 
+                 WHERE year > "1878" 
+                 ORDER BY count DESC 
+                 LIMIT 10')
+top10byyear
+
+
+```
+
+
+
+Who are the 10 actors that have the most aliases? (i.e., see the aka_names table)
+
+```{r}
+#SQL query lists out actors and number of aliases in order
+dbGetQuery(db, 'SELECT fname, lname, count(aka_names.idactors) AS count 
+           FROM aka_names, actors 
+           WHERE aka_names.idactors = actors.idactors
+           GROUP BY aka_names.idactors ORDER BY count DESC LIMIT 10')
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
